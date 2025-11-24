@@ -1,0 +1,881 @@
+# ==============================================================================
+# PROYECTO: PACMAN EN MIPS 
+# ASIGNATURA: Organización del Computador
+# ==============================================================================
+# DESCRIPCIÓN:
+# Implementación del juego Pacman utilizando el simulador MARS.
+# El juego cuenta con gráficos mediante Bitmap Display, entrada por teclado MMIO,
+# inteligencia artificial básica para enemigos y sistema de puntuación.
+#
+# CARACTERÍSTICAS TÉCNICAS:
+# - Memoria de Video: 0x10010000 (Inicio de .data)
+# - Mapa Lógico: 0x10040000 (Heap).
+# - Input: Polling de memoria mapeada (MMIO).
+# - Salida: Ventanas emergentes (Syscall 55/56) y Consola (Syscall 1/4/34/35).
+# - Conversión de Bases: Muestra puntuación en Dec, Hex, Oct, Bin al ganar.
+# ==============================================================================
+# INSTRUCCIONES:
+# - Primero ensambla y antes de darle Go, abre el en Tools, Bitmap Display y Keyboard and Display MMIO Simulator (Este ultimo para los movimientos).
+# - Una vez cumplido el paso anterior, darle "Connect to MIPS" en ambas herramientas.
+# - Darle go, y verá en el Bitmap Display el video realizado, para mover al personaje dele click al cuadro del lado de abajo del Keyboard and Display MMIO Simulator.
+# - Las teclas para el movimiento son: W arriba, A izquierda, D derecha y S para ir hacia abajo.
+# - Por último disfrute del videojuego, recuerde obtener todas las monedas antes de ir a la meta, Mucha Suerte. :)
+# ==============================================================================
+
+.data
+    # --- ESCUDO DE MEMORIA ---
+    # Protege los textos de ser borrados por los gráficos
+    buffer_protector: .space 4096
+
+    # --- TEXTOS ---
+    .align 2
+    msg_win_pop:  .asciiz "YOU WIN! Puntuacion: "
+    .align 2
+    msg_lose_pop: .asciiz "GAME OVER! Te han atrapado."
+    
+    .align 2
+    header_txt:   .asciiz "\n--- REPORTE DE PUNTUACION ---\n"
+    .align 2
+    msg_lose_con: .asciiz "\n--- GAME OVER ---\n"
+    
+    .align 2
+    lbl_dec:      .asciiz "Decimal:     "
+    .align 2
+    lbl_hex:      .asciiz "Hexadecimal: "
+    .align 2
+    lbl_oct:      .asciiz "Octal:       "
+    .align 2
+    lbl_bin:      .asciiz "Binario:     "
+    
+    .align 2
+    newline:      .asciiz "\n"
+    .align 2
+    hex_chars:    .asciiz "0123456789ABCDEF"
+
+    # Respaldo de puntuación
+    .align 2
+    score_safe:   .word 0
+
+.text
+.globl main
+main:
+    # 1. Configuración de Memoria (Mapa en el Heap)
+    li $s0, 0x10040000  
+    
+    li $s1, 0           # Puntuación
+    sw $s1, score_safe
+
+    # Posiciones Iniciales
+    li $s2, 1           # Jugador X
+    li $s3, 1           # Jugador Y
+    li $s4, 14          # Enemigo 1 X
+    li $s5, 1           # Enemigo 1 Y
+    li $s6, 1           # Enemigo 2 X
+    li $s7, 14          # Enemigo 2 Y
+
+    # 2. Iniciar Juego
+    jal crear_mapa_en_memoria
+    jal generar_monedas_aleatorias
+    jal dibujar_estado_grafico
+
+# ==============================================================================
+# BUCLE PRINCIPAL
+# ==============================================================================
+main_loop:
+    # Recargar base del mapa por seguridad
+    li $s0, 0x10040000
+
+    # 1. Leer Teclado
+    jal leer_teclado_mmio
+    beq $v0, $zero, wait_step 
+    
+    # 2. Mover Jugador
+    move $a0, $v0
+    jal procesar_movimiento
+
+    # 3. Verificar si chocamos con enemigo AL MOVERNOS
+    jal verificar_muerte_jugador
+
+    # 4. Mover Enemigos
+    jal mover_enemigos
+
+    # 5. Dibujar
+    jal dibujar_estado_grafico
+
+    # 6. Pausa de juego (60ms)
+    li $v0, 32
+    li $a0, 60
+    syscall
+
+    j main_loop
+
+wait_step:
+    li $v0, 32
+    li $a0, 10      # Pausa pequeña para no congelar CPU
+    syscall
+    j main_loop
+
+# ==============================================================================
+# LÓGICA DEL JUEGO
+# ==============================================================================
+
+verificar_muerte_jugador:
+    # E1
+    bne $s2, $s4, chk_d_e2
+    bne $s3, $s5, chk_d_e2
+    j game_over
+chk_d_e2:
+    # E2
+    bne $s2, $s6, ret_chk_d
+    bne $s3, $s7, ret_chk_d
+    j game_over
+ret_chk_d:
+    jr $ra
+
+procesar_movimiento:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+
+    li $t1, 'w'
+    beq $a0, $t1, do_up
+    li $t1, 'W'
+    beq $a0, $t1, do_up
+    
+    li $t1, 's'
+    beq $a0, $t1, do_down
+    li $t1, 'S'
+    beq $a0, $t1, do_down
+    
+    li $t1, 'a'
+    beq $a0, $t1, do_left
+    li $t1, 'A'
+    beq $a0, $t1, do_left
+    
+    li $t1, 'd'
+    beq $a0, $t1, do_right
+    li $t1, 'D'
+    beq $a0, $t1, do_right
+    
+    j proc_end
+
+do_up:
+    jal mover_up
+    j proc_end
+do_down:
+    jal mover_down
+    j proc_end
+do_left:
+    jal mover_left
+    j proc_end
+do_right:
+    jal mover_right
+    j proc_end
+
+proc_end:
+    lw $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr $ra
+
+# --- Movimientos ---
+mover_up:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+    move $a0, $s2
+    move $a1, $s3
+    addi $a1, $a1, -1
+    jal probar_mover
+    beqz $v0, ret_mov
+    move $s3, $a1
+    j ret_mov
+
+mover_down:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+    move $a0, $s2
+    move $a1, $s3
+    addi $a1, $a1, 1
+    jal probar_mover
+    beqz $v0, ret_mov
+    move $s3, $a1
+    j ret_mov
+
+mover_left:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+    move $a0, $s2
+    move $a1, $s3
+    addi $a0, $a0, -1
+    jal probar_mover
+    beqz $v0, ret_mov
+    move $s2, $a0
+    j ret_mov
+
+mover_right:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+    move $a0, $s2
+    move $a1, $s3
+    addi $a0, $a0, 1
+    jal probar_mover
+    beqz $v0, ret_mov
+    move $s2, $a0
+
+ret_mov:
+    lw $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr $ra
+
+# --- Probar Mover ---
+probar_mover:
+    move $t0, $a0      
+    move $t1, $a1      
+    li $v0, 0
+    
+    # Limites
+    blt $t0, $zero, pm_sal
+    blt $t1, $zero, pm_sal
+    li $t2, 16
+    bge $t0, $t2, pm_sal
+    bge $t1, $t2, pm_sal
+    
+    # Offset
+    mul $t4, $t1, $t2
+    add $t4, $t4, $t0
+    add $t5, $s0, $t4
+    lbu $t6, 0($t5)
+    
+    li $t7, 1
+    beq $t6, $t7, pm_sal    # Pared
+    
+    li $t7, 2
+    beq $t6, $t7, pm_moneda # Moneda
+    
+    li $t7, 3
+    beq $t6, $t7, pm_ganar  # Meta
+    
+    li $v0, 1 # Libre
+    jr $ra
+
+pm_moneda:
+    li $t8, 10
+    add $s1, $s1, $t8   # Score + 10
+    sw $s1, score_safe
+    sb $zero, 0($t5)    # Borrar moneda
+    li $v0, 1
+    jr $ra
+
+# ---------------------------------------------------------
+# GANAR Y PERDER
+# ---------------------------------------------------------
+pm_ganar:
+    lw $s1, score_safe
+
+    # 1. POP-UP
+    li $v0, 56
+    la $a0, msg_win_pop
+    move $a1, $s1
+    syscall
+
+    # 2. CONSOLA
+    jal print_newline
+    li $v0, 4
+    la $a0, header_txt
+    syscall
+
+    # A. DECIMAL
+    li $v0, 4
+    la $a0, lbl_dec
+    syscall
+    li $v0, 1
+    move $a0, $s1
+    syscall
+    jal print_newline
+
+    # B. HEXADECIMAL
+    li $v0, 4
+    la $a0, lbl_hex
+    syscall
+    li $v0, 34
+    move $a0, $s1
+    syscall
+    jal print_newline
+
+    # C. OCTAL
+    li $v0, 4
+    la $a0, lbl_oct
+    syscall
+    move $a0, $s1
+    jal print_octal_safe
+    jal print_newline
+
+    # D. BINARIO
+    li $v0, 4
+    la $a0, lbl_bin
+    syscall
+    li $v0, 35
+    move $a0, $s1
+    syscall
+    jal print_newline
+    jal print_newline
+
+    li $v0, 10
+    syscall
+
+pm_sal:
+    jr $ra
+
+game_over:
+    # Pop-up
+    li $v0, 55
+    la $a0, msg_lose_pop
+    li $a1, 0
+    syscall
+    
+    # Consola
+    jal print_newline
+    li $v0, 4
+    la $a0, msg_lose_con
+    syscall
+    
+    li $v0, 10
+    syscall
+
+# -----------------------
+# TECLADO Y ENEMIGOS
+# -----------------------
+leer_teclado_mmio:
+    li $v0, 0
+    li $t0, 0xffff0000
+    lw $t1, 0($t0)
+    andi $t1, $t1, 1
+    beqz $t1, lk_fin
+    
+    # USAR LW PARA LIMPIAR BUFFER
+    li $t2, 0xffff0004
+    lw $v0, 0($t2)      
+lk_fin:
+    jr $ra
+
+mover_enemigos:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+
+    # Recargar $s0 por seguridad
+    li $s0, 0x10040000
+
+    move $a0, $s4
+    move $a1, $s5
+    jal mover_un_enemigo
+    move $s4, $v0
+    move $s5, $v1
+
+    move $a0, $s6
+    move $a1, $s7
+    jal mover_un_enemigo
+    move $s6, $v0
+    move $s7, $v1
+    
+    # Check colision
+    beq $s2, $s4, chk_y1
+    j chk_e2_c
+chk_y1:
+    beq $s3, $s5, game_over
+
+chk_e2_c:
+    beq $s2, $s6, chk_y2
+    j end_enemies
+chk_y2:
+    beq $s3, $s7, game_over
+
+end_enemies:
+    lw $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr $ra
+
+mover_un_enemigo:
+    addi $sp, $sp, -20
+    sw $ra, 0($sp)
+    sw $s0, 4($sp)
+    sw $s1, 8($sp)
+    sw $a0, 12($sp)
+    sw $a1, 16($sp)
+    
+    li $v0, 42
+    li $a1, 4
+    syscall
+    
+    lw $t0, 12($sp)
+    lw $t1, 16($sp)
+    
+    beq $a0, 0, try_e0
+    beq $a0, 1, try_e1
+    beq $a0, 2, try_e2
+    addi $t0, $t0, 1
+    j chk_e_wall
+try_e0:
+    addi $t1, $t1, -1
+    j chk_e_wall
+try_e1:
+    addi $t1, $t1, 1
+    j chk_e_wall
+try_e2:
+    addi $t0, $t0, -1
+
+chk_e_wall:
+    blt $t0, $zero, inv_e
+    blt $t1, $zero, inv_e
+    li $t4, 16
+    bge $t0, $t4, inv_e
+    bge $t1, $t4, inv_e
+    
+    lw $s0, 4($sp) # Recargar mapa
+    
+    mul $t5, $t1, $t4
+    add $t5, $t5, $t0
+    add $t6, $s0, $t5
+    lbu $t7, 0($t6)
+    li $t8, 1
+    beq $t7, $t8, inv_e
+    
+    move $v0, $t0
+    move $v1, $t1
+    j fin_e
+
+inv_e:
+    lw $v0, 12($sp)
+    lw $v1, 16($sp)
+
+fin_e:
+    lw $ra, 0($sp)
+    lw $s0, 4($sp)
+    lw $s1, 8($sp)
+    addi $sp, $sp, 20
+    jr $ra
+
+# -----------------------
+# UTILS Y DIBUJO
+# -----------------------
+generar_monedas_aleatorias:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+    li $t0, 0
+loop_gen:
+    bge $t0, 256, end_gen
+    add $t1, $s0, $t0
+    lbu $t2, 0($t1)
+    bnez $t2, skip_gen
+    
+    li $v0, 42
+    li $a1, 100
+    syscall
+    li $t3, 20
+    bge $a0, $t3, skip_gen
+    
+    li $t3, 2
+    sb $t3, 0($t1)
+skip_gen:
+    addi $t0, $t0, 1
+    j loop_gen
+end_gen:
+    lw $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr $ra
+
+print_newline:
+    li $a0, 10
+    li $v0, 11
+    syscall
+    jr $ra
+
+print_octal_safe:
+    addi $sp, $sp, -8
+    sw $ra, 0($sp)
+    sw $a0, 4($sp) 
+    li $t0, 8
+    blt $a0, $t0, print_digit
+    div $a0, $t0
+    mflo $a0
+    jal print_octal_safe
+    lw $a0, 4($sp)
+print_digit:
+    li $t0, 8
+    div $a0, $t0
+    mfhi $a0
+    li $v0, 1
+    syscall
+    lw $ra, 0($sp)
+    addi $sp, $sp, 8
+    jr $ra
+
+dibujar_estado_grafico:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+    
+    # BITMAP DISPLAY BASE (0x10010000)
+    li $t0, 0x10010000 
+    li $t1, 0
+    
+loop_draw:
+    bge $t1, 256, draw_end
+    
+    li $t9, 16
+    div $t1, $t9
+    mflo $a1 
+    mfhi $a0 
+    
+    beq $a1, $s3, chk_p
+    j chk_e1d
+chk_p:
+    beq $a0, $s2, dr_player
+
+chk_e1d:
+    beq $a1, $s5, chk_e1dx
+    j chk_e2d
+chk_e1dx:
+    beq $a0, $s4, dr_enemy
+
+chk_e2d:
+    beq $a1, $s7, chk_e2dx
+    j dr_map
+chk_e2dx:
+    beq $a0, $s6, dr_enemy
+
+dr_map:
+    add $t2, $s0, $t1
+    lbu $t3, 0($t2)
+    
+    li $a2, 0x00000000
+    beq $t3, 1, c_blue
+    beq $t3, 2, c_yell
+    beq $t3, 3, c_green
+    j put_px
+
+c_blue:
+    li $a2, 0x000000FF
+    j put_px
+c_yell:
+    li $a2, 0x00FFFF00
+    j put_px
+c_green:
+    li $a2, 0x0000FF00
+    j put_px
+dr_player:
+    li $a2, 0x00FFFFFF
+    j put_px
+dr_enemy:
+    li $a2, 0x00FF0000
+
+put_px:
+    sw $a2, 0($t0)
+    addi $t0, $t0, 4
+    addi $t1, $t1, 1
+    j loop_draw
+
+draw_end:
+    lw $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr $ra
+
+# ===============================================
+# CREAR MAPA (EXPANDIDO SIN PUNTOS Y COMA)
+# ===============================================
+crear_mapa_en_memoria:
+    addi $sp, $sp, -4
+    sw $ra, 0($sp)
+    
+    li $t1, 1
+    li $t2, 0
+    li $t3, 2
+    li $t4, 3
+
+    # --- Fila 0 ---
+    sb $t1, 0($s0)
+    sb $t1, 1($s0)
+    sb $t1, 2($s0)
+    sb $t1, 3($s0)
+    sb $t1, 4($s0)
+    sb $t1, 5($s0)
+    sb $t1, 6($s0)
+    sb $t1, 7($s0)
+    sb $t1, 8($s0)
+    sb $t1, 9($s0)
+    sb $t1, 10($s0)
+    sb $t1, 11($s0)
+    sb $t1, 12($s0)
+    sb $t1, 13($s0)
+    sb $t1, 14($s0)
+    sb $t1, 15($s0)
+
+    # --- Fila 1 ---
+    sb $t1, 16($s0)
+    sb $t2, 17($s0)
+    sb $t3, 18($s0)
+    sb $t3, 19($s0)
+    sb $t3, 20($s0)
+    sb $t3, 21($s0)
+    sb $t3, 22($s0)
+    sb $t3, 23($s0)
+    sb $t3, 24($s0)
+    sb $t3, 25($s0)
+    sb $t3, 26($s0)
+    sb $t3, 27($s0)
+    sb $t3, 28($s0)
+    sb $t3, 29($s0)
+    sb $t3, 30($s0)
+    sb $t1, 31($s0)
+
+    # --- Fila 2 ---
+    sb $t1, 32($s0)
+    sb $t3, 33($s0)
+    sb $t1, 34($s0)
+    sb $t1, 35($s0)
+    sb $t1, 36($s0)
+    sb $t1, 37($s0)
+    sb $t1, 38($s0)
+    sb $t1, 39($s0)
+    sb $t1, 40($s0)
+    sb $t2, 41($s0)
+    sb $t1, 42($s0)
+    sb $t1, 43($s0)
+    sb $t1, 44($s0)
+    sb $t1, 45($s0)
+    sb $t3, 46($s0)
+    sb $t1, 47($s0)
+
+    # --- Fila 3 ---
+    sb $t1, 48($s0)
+    sb $t3, 49($s0)
+    sb $t2, 50($s0)
+    sb $t3, 51($s0)
+    sb $t2, 52($s0)
+    sb $t2, 53($s0)
+    sb $t2, 54($s0)
+    sb $t2, 55($s0)
+    sb $t2, 56($s0)
+    sb $t2, 57($s0)
+    sb $t2, 58($s0)
+    sb $t2, 59($s0)
+    sb $t2, 60($s0)
+    sb $t1, 61($s0)
+    sb $t3, 62($s0)
+    sb $t1, 63($s0)
+
+    # --- Fila 4 ---
+    sb $t1, 64($s0)
+    sb $t3, 65($s0)
+    sb $t1, 66($s0)
+    sb $t3, 67($s0)
+    sb $t1, 68($s0)
+    sb $t1, 69($s0)
+    sb $t2, 70($s0)
+    sb $t1, 71($s0)
+    sb $t1, 72($s0)
+    sb $t1, 73($s0)
+    sb $t1, 74($s0)
+    sb $t1, 75($s0)
+    sb $t3, 76($s0)
+    sb $t1, 77($s0)
+    sb $t3, 78($s0)
+    sb $t1, 79($s0)
+
+    # --- Fila 5 ---
+    sb $t1, 80($s0)
+    sb $t3, 81($s0)
+    sb $t1, 82($s0)
+    sb $t3, 83($s0)
+    sb $t1, 84($s0)
+    sb $t2, 85($s0)
+    sb $t2, 86($s0)
+    sb $t2, 87($s0)
+    sb $t2, 88($s0)
+    sb $t2, 89($s0)
+    sb $t2, 90($s0)
+    sb $t1, 91($s0)
+    sb $t3, 92($s0)
+    sb $t2, 93($s0)
+    sb $t3, 94($s0)
+    sb $t1, 95($s0)
+
+    # --- Fila 6 ---
+    sb $t1, 96($s0)
+    sb $t3, 97($s0)
+    sb $t1, 98($s0)
+    sb $t3, 99($s0)
+    sb $t1, 100($s0)
+    sb $t2, 101($s0)
+    sb $t1, 102($s0)
+    sb $t1, 103($s0)
+    sb $t1, 104($s0)
+    sb $t1, 105($s0)
+    sb $t2, 106($s0)
+    sb $t1, 107($s0)
+    sb $t3, 108($s0)
+    sb $t1, 109($s0)
+    sb $t3, 110($s0)
+    sb $t1, 111($s0)
+
+    # --- Fila 7 ---
+    sb $t1, 112($s0)
+    sb $t3, 113($s0)
+    sb $t1, 114($s0)
+    sb $t3, 115($s0)
+    sb $t1, 116($s0)
+    sb $t2, 117($s0)
+    sb $t1, 118($s0)
+    sb $t4, 119($s0)
+    sb $t2, 120($s0)
+    sb $t1, 121($s0)
+    sb $t2, 122($s0)
+    sb $t1, 123($s0)
+    sb $t3, 124($s0)
+    sb $t1, 125($s0)
+    sb $t3, 126($s0)
+    sb $t1, 127($s0)
+
+    # --- Fila 8 ---
+    sb $t1, 128($s0)
+    sb $t3, 129($s0)
+    sb $t1, 130($s0)
+    sb $t3, 131($s0)
+    sb $t1, 132($s0)
+    sb $t2, 133($s0)
+    sb $t1, 134($s0)
+    sb $t2, 135($s0)
+    sb $t2, 136($s0)
+    sb $t1, 137($s0)
+    sb $t2, 138($s0)
+    sb $t2, 139($s0)
+    sb $t3, 140($s0)
+    sb $t1, 141($s0)
+    sb $t3, 142($s0)
+    sb $t1, 143($s0)
+
+    # --- Fila 9 ---
+    sb $t1, 144($s0)
+    sb $t3, 145($s0)
+    sb $t1, 146($s0)
+    sb $t3, 147($s0)
+    sb $t1, 148($s0)
+    sb $t2, 149($s0)
+    sb $t2, 150($s0)
+    sb $t2, 151($s0)
+    sb $t2, 152($s0)
+    sb $t2, 153($s0)
+    sb $t2, 154($s0)
+    sb $t1, 155($s0)
+    sb $t3, 156($s0)
+    sb $t1, 157($s0)
+    sb $t3, 158($s0)
+    sb $t1, 159($s0)
+
+    # --- Fila 10 ---
+    sb $t1, 160($s0)
+    sb $t3, 161($s0)
+    sb $t2, 162($s0)
+    sb $t3, 163($s0)
+    sb $t1, 164($s0)
+    sb $t1, 165($s0)
+    sb $t1, 166($s0)
+    sb $t2, 167($s0)
+    sb $t1, 168($s0)
+    sb $t1, 169($s0)
+    sb $t1, 170($s0)
+    sb $t1, 171($s0)
+    sb $t3, 172($s0)
+    sb $t1, 173($s0)
+    sb $t3, 174($s0)
+    sb $t1, 175($s0)
+
+    # --- Fila 11 ---
+    sb $t1, 176($s0)
+    sb $t3, 177($s0)
+    sb $t1, 178($s0)
+    sb $t3, 179($s0)
+    sb $t2, 180($s0)
+    sb $t2, 181($s0)
+    sb $t2, 182($s0)
+    sb $t2, 183($s0)
+    sb $t2, 184($s0)
+    sb $t2, 185($s0)
+    sb $t2, 186($s0)
+    sb $t2, 187($s0)
+    sb $t2, 188($s0)
+    sb $t1, 189($s0)
+    sb $t3, 190($s0)
+    sb $t1, 191($s0)
+
+    # --- Fila 12 ---
+    sb $t1, 192($s0)
+    sb $t3, 193($s0)
+    sb $t1, 194($s0)
+    sb $t1, 195($s0)
+    sb $t1, 196($s0)
+    sb $t1, 197($s0)
+    sb $t1, 198($s0)
+    sb $t1, 199($s0)
+    sb $t1, 200($s0)
+    sb $t1, 201($s0)
+    sb $t2, 202($s0)
+    sb $t1, 203($s0)
+    sb $t1, 204($s0)
+    sb $t1, 205($s0)
+    sb $t3, 206($s0)
+    sb $t1, 207($s0)
+
+    # --- Fila 13 ---
+    sb $t1, 208($s0)
+    sb $t3, 209($s0)
+    sb $t3, 210($s0)
+    sb $t3, 211($s0)
+    sb $t3, 212($s0)
+    sb $t3, 213($s0)
+    sb $t3, 214($s0)
+    sb $t3, 215($s0)
+    sb $t3, 216($s0)
+    sb $t3, 217($s0)
+    sb $t3, 218($s0)
+    sb $t3, 219($s0)
+    sb $t3, 220($s0)
+    sb $t3, 221($s0)
+    sb $t3, 222($s0)
+    sb $t1, 223($s0)
+
+    # --- Fila 14 ---
+    sb $t1, 224($s0)
+    sb $t2, 225($s0)
+    sb $t2, 226($s0)
+    sb $t2, 227($s0)
+    sb $t2, 228($s0)
+    sb $t2, 229($s0)
+    sb $t2, 230($s0)
+    sb $t2, 231($s0)
+    sb $t2, 232($s0)
+    sb $t2, 233($s0)
+    sb $t2, 234($s0)
+    sb $t2, 235($s0)
+    sb $t2, 236($s0)
+    sb $t2, 237($s0)
+    sb $t2, 238($s0)
+    sb $t1, 239($s0)
+
+    # --- Fila 15 ---
+    sb $t1, 240($s0)
+    sb $t1, 241($s0)
+    sb $t1, 242($s0)
+    sb $t1, 243($s0)
+    sb $t1, 244($s0)
+    sb $t1, 245($s0)
+    sb $t1, 246($s0)
+    sb $t1, 247($s0)
+    sb $t1, 248($s0)
+    sb $t1, 249($s0)
+    sb $t1, 250($s0)
+    sb $t1, 251($s0)
+    sb $t1, 252($s0)
+    sb $t1, 253($s0)
+    sb $t1, 254($s0)
+    sb $t1, 255($s0)
+    
+    lw $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr $ra
